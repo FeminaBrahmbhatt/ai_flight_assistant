@@ -1,103 +1,130 @@
-import OpenAi from "openai";
+import { describe } from 'node:test';
+import OpenAi from 'openai'
+import { parse } from 'path';
 
-const openAi = new OpenAi();
+const openai = new OpenAi();
 
-function getTimeOfDay(){
-    return '2:55'
-}
-
-function getOrderStatus(orderId: string) {
-    console.log(`Getting the status of orderId ${orderId}`);
-    const orderIdAsNum = parseInt(orderId);
-    if(orderIdAsNum % 2 === 0){
-        return 'In Progress'
+const context: OpenAi.Chat.Completions.ChatCompletionMessageParam[] = [
+    {
+        role: 'system',
+        content: 'You are a helful assistant who is having all the information about the flights from depart to destination.'
     }
-    return 'Completed'
+]
+
+function getFlightsFrom(depart:string, destination:string): string[]{
+    console.log('Getting available flights')
+    if(depart === 'SFO' && destination === 'LAX'){
+        return ['UA 123', 'AA 456'];
+    }
+    else if(depart === 'DFW' && destination === 'LAX'){
+        return ['AA 789'];
+    }
+
+    return ['66 FSFG'];
 }
 
-async function callOpenaiWithTools() {
-  const context: OpenAi.Chat.Completions.ChatCompletionMessageParam[] = [
-    {
-      role: "system",
-      content:
-        "You are a helpful assistant that gives information about the time of day and order status",
-    },
-    {
-      role: "user",
-      content: "What is the status of order 1234?",
-    },
-  ];
+function getReservationFrom(flightNum:string): string | 'FullyBooked' {
+    if(flightNum.length === 6){
+        console.log(`Reserving flight ${flightNum}`);
+        return '123456';
+    }
+    return 'Fully booked'
+}
 
-  const response = await openAi.chat.completions.create({
-    model: 'gpt-3.5-turbo-1106',
-    messages: context,
-    tools: [
-        {
-            type: 'function',
-            function: {
-                name: 'getTimeOfDay',
-                description: 'Get Time of a day'
-            }
-        },
-        {
-            type: 'function',
-            function: {
-                name: 'getOrderStatus',
-                description: 'Returns the status of an order',
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        orderId: {
-                            type: 'string',
-                            description: 'The id of the order to get the status of'
+async function callOpenAiFlightAssistantWithFunction(){
+    let response = await openai.chat.completions.create({
+        model:'gpt-3.5-turbo-1106',
+        messages: context,
+        temperature:0.0,
+        tools:[
+            {
+                type:'function',
+                function:{
+                    name:'getFlightsFrom',
+                    description:'To get all the flights from depart to destination',
+                    parameters:{
+                        type:'object',
+                        properties:{
+                            depart:{
+                                type: 'string',
+                                description:'The string of depart location.'
+                            },
+                            destination:{
+                                type: 'string',
+                                description: 'The string of destination location.'
+                            }
                         },
-                    },
-                    required:['orderId']
+                        required:['depart', 'destination']
+                    }
+                }
+            },
+            {
+                type:'function',
+                function:{
+                    name:'getReservationFrom',
+                    description:'To get reservation of flight number',
+                    parameters:{
+                        type:'object',
+                        properties:{
+                            flightNum:{
+                                type: 'string',
+                                description:'The string of flight number.'
+                            },
+                        },
+                        required:['flightNum']
+                    }
                 }
             }
+        ],
+        tool_choice:'auto'
+    });
+
+    const willInvokeFunctionCall = response.choices[0].finish_reason;
+    const toolCall = response.choices[0].message.tool_calls![0];
+
+    if(willInvokeFunctionCall){
+        const toolName = toolCall.function.name;
+        
+        if(toolName === 'getFlightsFrom'){
+            const rawArguments = toolCall.function.arguments;
+            const parsedArguments = JSON.parse(rawArguments);
+            context.push(response.choices[0].message);
+            let flights = getFlightsFrom(parsedArguments.depart, parsedArguments.destination);
+            context.push({
+                role: 'tool',
+                content: flights.toString(),
+                tool_call_id: toolCall.id
+            })
         }
-    ],
-    tool_choice: 'auto'
-  });
 
-  console.log(response.choices[0].message.content);
-
-  const WillInvokeFunction = response.choices[0].finish_reason == 'tool_calls'
-  const toolCall = response.choices[0].message.tool_calls![0]
-
-  if(WillInvokeFunction){
-    const toolName = toolCall.function.name;
-
-    if(toolName == 'getTimeOfDay'){
-        const toolResponse = getTimeOfDay();
-        context.push(response.choices[0].message);
-        context.push({
-            role: 'tool',
-            content: toolResponse,
-            tool_call_id: toolCall.id
-        });
+        if(toolName === 'getReservationFrom'){
+            const rawArguments = toolCall.function.arguments;
+            const parsedArguments = JSON.parse(rawArguments);
+            context.push(response.choices[0].message);
+            let reservation = getReservationFrom(parsedArguments.flightNum);
+            context.push({
+                role: 'tool',
+                content: reservation,
+                tool_call_id: toolCall.id
+            })
+        }
     }
 
-    if(toolName == 'getOrderStatus'){
-        const rawArgument = toolCall.function.arguments;
-        const parsedArguments = JSON.parse(rawArgument);
-        const toolResponse = getOrderStatus(parsedArguments.orderId);
-        context.push(response.choices[0].message);
-        context.push({
-            role: 'tool',
-            content: toolResponse,
-            tool_call_id: toolCall.id
-        });
-    }
-  }
 
-  const secondResponse = await openAi.chat.completions.create({
-    model: 'gpt-3.5-turbo-1106',
-    messages: context
-  })
+    const secondResponse = await openai.chat.completions.create({
+        model:'gpt-3.5-turbo-1106',
+        messages: context
+    })
 
-  console.log(secondResponse.choices[0].message.content)
+    console.log(secondResponse.choices[0].message.content);
 }
 
-
-callOpenaiWithTools()
+console.log('Welcome to flight assistant chatbot!')
+process.stdin.addListener("data", async function name(input: string){
+    const userInput = input.toString().trim();
+    context.push({
+        role: 'assistant',
+        content: userInput
+    });
+    await callOpenAiFlightAssistantWithFunction();
+})
